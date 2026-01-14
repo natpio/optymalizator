@@ -6,9 +6,8 @@ import math
 st.set_page_config(page_title="Planer Załadunku SQM", layout="wide", page_icon="🚚")
 
 # --- KOMPLETNA BAZA PRODUKTÓW (119 POZYCJI) ---
-# Dane przeniesione 1:1 z Twojego pliku HTML
+# Dane zgodne z plikiem planer_zaladunkow gem.html
 PRODUCTS_DATA = {
-    # Monitory
     "17-23\" - plastic case": {"l": 80, "w": 60, "h": 20, "weight": 20.0, "items_per_case": 1, "stack": True},
     "24-32\" - plastic case": {"l": 60, "w": 40, "h": 20, "weight": 15.0, "items_per_case": 1, "stack": True},
     "32\" - triple - STANDARD": {"l": 90, "w": 50, "h": 70, "weight": 50.0, "items_per_case": 3, "stack": True},
@@ -33,8 +32,6 @@ PRODUCTS_DATA = {
     "LG 75\" - STANDARD": {"l": 140, "w": 40, "h": 140, "weight": 210.0, "items_per_case": 1, "stack": True},
     "MULTIMEDIA TOTEM 55\"": {"l": 100, "w": 60, "h": 210, "weight": 210.0, "items_per_case": 1, "stack": False},
     "MULTIMEDIA TOTEM / 55\" / 4K": {"l": 100, "w": 80, "h": 200, "weight": 150.0, "items_per_case": 1, "stack": False},
-
-    # LED
     "P1 lub 1.58 ABSEN": {"l": 108, "w": 71, "h": 62, "weight": 103.0, "items_per_case": 8, "stack": True},
     "P1.9 UNILUMIN UPAD IV / S-FLEX": {"l": 117, "w": 57, "h": 79, "weight": 115.0, "items_per_case": 8, "stack": True},
     "P2.6 UNILUMIN UPAD IV": {"l": 117, "w": 57, "h": 79, "weight": 116.0, "items_per_case": 8, "stack": True},
@@ -64,8 +61,6 @@ PRODUCTS_DATA = {
     "DICOLOR US-390": {"l": 110, "w": 82, "h": 73, "weight": 87.0, "items_per_case": 6, "stack": True},
     "P1.9 KINETIC LED CABINET": {"l": 120, "w": 63, "h": 65, "weight": 95.0, "items_per_case": 2, "stack": True},
     "P2.9 OUTDOOR RENTAL": {"l": 120, "w": 60, "h": 80, "weight": 120.0, "items_per_case": 9, "stack": True},
-
-    # Akcesoria i Lighting
     "case for accessories RED": {"l": 120, "w": 60, "h": 80, "weight": 120.0, "items_per_case": 5, "stack": True},
     "case for accessories ARUM": {"l": 120, "w": 70, "h": 120, "weight": 140.0, "items_per_case": 1, "stack": True},
     "case for accessories NEC": {"l": 100, "w": 50, "h": 80, "weight": 120.0, "items_per_case": 3, "stack": True},
@@ -146,7 +141,6 @@ EURO_PALLET_AREA = 120 * 80  # cm2
 
 # --- UI APLIKACJI ---
 st.title("🚚 Planer Załadunków SQM Multimedia")
-st.markdown("---")
 
 if 'cargo_list' not in st.session_state:
     st.session_state.cargo_list = []
@@ -157,42 +151,37 @@ with col_config:
     st.header("1. Konfiguracja")
     v_type = st.selectbox("Wybierz typ pojazdu", list(VEHICLES_DATA.keys()))
     v = VEHICLES_DATA[v_type]
-    
     st.info(f"**Limit:** {v['weight']}kg | {v['pallets']} palet | {v['l']}x{v['w']}x{v['h']} cm")
     
     st.divider()
     st.header("2. Dodaj ładunek")
-    
-    # Wyszukiwarka produktów
     search_query = st.text_input("Szukaj sprzętu (np. NEC, LED, P2.6)...")
     filtered_options = [k for k in PRODUCTS_DATA.keys() if search_query.lower() in k.lower()]
-    
     selected_name = st.selectbox("Wybierz z bazy danych", filtered_options)
     
     if st.button("➕ Dodaj do listy załadunkowej", use_container_width=True):
         new_item = PRODUCTS_DATA[selected_name].copy()
         new_item['name'] = selected_name
-        new_item['id'] = len(st.session_state.cargo_list)
         st.session_state.cargo_list.append(new_item)
 
 with col_results:
     st.header("3. Twoja naczepa")
     
     if not st.session_state.cargo_list:
-        st.warning("Lista załadunkowa jest pusta. Dodaj produkty z panelu po lewej.")
+        st.warning("Lista załadunkowa jest pusta.")
     else:
         total_weight = 0
         total_area = 0
-        final_packing_list = []
+        total_cases_count = 0
 
-        # Tabela edycji
+        # Pętla przez dodane pozycje
         for i, item in enumerate(st.session_state.cargo_list):
             with st.expander(f"📦 {item['name']}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
                 l = c1.number_input("Długość (cm)", value=int(item['l']), key=f"l_{i}")
                 w = c2.number_input("Szerokość (cm)", value=int(item['w']), key=f"w_{i}")
                 h = c3.number_input("Wysokość (cm)", value=int(item['h']), key=f"h_{i}")
-                wg = c4.number_input("Waga (kg)", value=float(item['weight']), key=f"wg_{i}")
+                wg = c4.number_input("Waga case (kg)", value=float(item['weight']), key=f"wg_{i}")
 
                 q1, q2, q3 = st.columns([2, 1, 1])
                 qty = q1.number_input("Ilość sztuk sprzętu", min_value=1, value=1, key=f"qty_{i}")
@@ -201,41 +190,34 @@ with col_results:
                     st.session_state.cargo_list.pop(i)
                     st.rerun()
 
-                # Obliczenia dla danej pozycji
+                # --- POPRAWIONE OBLICZENIA DLA TEGO WIERSZA ---
                 num_cases = math.ceil(qty / item['items_per_case'])
-                total_weight += (wg * num_cases)
+                total_cases_count += num_cases
+                total_weight += (wg * num_cases) # Waga wszystkich skrzyń w tym wierszu
                 
-                # Uproszczona logika zajętości podłogi (uwzględniająca stackowanie)
+                # Obliczanie zajętości podłogi
                 if not stk:
                     total_area += (l * w * num_cases)
                 else:
-                    # Zakładamy, że przy stackowaniu oszczędzamy 50% powierzchni podłogi 
-                    # (można to rozbudować o realną wysokość naczepy)
-                    total_area += (l * w * math.ceil(num_cases / 2))
+                    total_area += (l * w * math.ceil(num_cases / 2)) # Stackowanie na 2 poziomy
 
-        # PODSUMOWANIE
+        # PODSUMOWANIE METRYCZNE
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         
         pallet_equiv = round(total_area / EURO_PALLET_AREA, 2)
         weight_perc = round((total_weight / v['weight']) * 100, 1)
         
-        m1.metric("Waga całkowita", f"{total_weight} kg", f"{weight_perc}%")
+        m1.metric("Waga całkowita", f"{total_weight} kg", f"{weight_perc}% limitu")
         m2.metric("Miejsca paletowe", f"{pallet_equiv}", f"Limit: {v['pallets']}")
         m3.metric("Zajęta pow.", f"{round(total_area/10000, 1)} m²")
-        m4.metric("Liczba casów", f"{len(st.session_state.cargo_list)}")
+        m4.metric("Liczba casów", f"{total_cases_count}") # POPRAWKA: Suma wszystkich skrzyń
 
         if total_weight > v['weight'] or pallet_equiv > v['pallets']:
-            st.error("⚠️ UWAGA: Załadunek przekracza dopuszczalne parametry pojazdu!")
+            st.error("⚠️ PRZEKROCZONO LIMIT ZAŁADUNKU!")
         else:
-            st.success("✅ Ładunek mieści się w parametrach pojazdu.")
+            st.success("✅ Ładunek mieści się w parametrach.")
 
         if st.button("🔄 Wyczyść wszystko"):
             st.session_state.cargo_list = []
             st.rerun()
-
-st.sidebar.markdown("""
-### O aplikacji
-To narzędzie zostało stworzone dla **SQM Multimedia Solutions** do szybkiej oceny zapotrzebowania transportowego. 
-Logika obliczeń bazuje na ekwiwalencie powierzchni paletowej i dopuszczalnej ładowności.
-""")
