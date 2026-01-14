@@ -3,10 +3,17 @@ import pandas as pd
 import math
 
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="Planer Załadunku SQM", layout="wide", page_icon="🚚")
+st.set_page_config(page_title="SQM Cargo Planner Pro", layout="wide", page_icon="🚚")
 
-# --- KOMPLETNA BAZA PRODUKTÓW (119 POZYCJI) ---
-# Dane zgodne z plikiem planer_zaladunkow gem.html
+# --- KOMPLETNA BAZA POJAZDÓW ---
+VEHICLES_DATA = {
+    "BUS": {"pallets": 8, "weight": 1100, "l": 450, "w": 150, "h": 245},
+    "Solówka 6m": {"pallets": 14, "weight": 3500, "l": 600, "w": 245, "h": 245},
+    "Solówka 7m": {"pallets": 16, "weight": 3500, "l": 700, "w": 245, "h": 245},
+    "FTL (Tir)": {"pallets": 33, "weight": 24000, "l": 1360, "w": 245, "h": 245},
+}
+
+# --- KOMPLETNA BAZA 119 PRODUKTÓW ---
 PRODUCTS_DATA = {
     "17-23\" - plastic case": {"l": 80, "w": 60, "h": 20, "weight": 20.0, "items_per_case": 1, "stack": True},
     "24-32\" - plastic case": {"l": 60, "w": 40, "h": 20, "weight": 15.0, "items_per_case": 1, "stack": True},
@@ -130,94 +137,154 @@ PRODUCTS_DATA = {
     "Własny ładunek": {"l": 1, "w": 1, "h": 1, "weight": 1.0, "items_per_case": 1, "stack": True}
 }
 
-VEHICLES_DATA = {
-    "BUS": {"pallets": 8, "weight": 1100, "l": 450, "w": 150, "h": 245},
-    "Solówka 6m": {"pallets": 14, "weight": 3500, "l": 600, "w": 245, "h": 245},
-    "Solówka 7m": {"pallets": 16, "weight": 3500, "l": 700, "w": 245, "h": 245},
-    "FTL (Tir)": {"pallets": 31, "weight": 12000, "l": 1360, "w": 245, "h": 245},
-}
+# --- ALGORYTM BIN PACKING 2D/3D (Z pliku gem3.html) ---
+def simulate_packing(cargo_list, vehicle):
+    all_cases = []
+    for item in cargo_list:
+        num_cases = math.ceil(item['qty'] / item['items_per_case'])
+        for _ in range(num_cases):
+            all_cases.append({
+                "name": item['name'],
+                "l": item['l'], "w": item['w'], "h": item['h'],
+                "weight": item['weight'], "stackable": item['stack'],
+                "area": item['l'] * item['w']
+            })
 
-EURO_PALLET_AREA = 120 * 80  # cm2
+    # Sortowanie FFD (First Fit Decreasing Area)
+    all_cases.sort(key=lambda x: x['area'], reverse=True)
 
-# --- UI APLIKACJI ---
-st.title("🚚 Planer Załadunków SQM Multimedia")
+    placed_stacks = []
+    unplaced = []
+    
+    # Przestrzeń naczepy traktowana jako prostokąt (0,0) do (w, l)
+    # available_spaces zarządza wolnymi prostokątami na podłodze
+    spaces = [{"x": 0, "y": 0, "w": vehicle['w'], "l": vehicle['l']}]
 
-if 'cargo_list' not in st.session_state:
-    st.session_state.cargo_list = []
+    for case in all_cases:
+        packed = False
+        
+        # 1. Próba stackowania
+        if case['stackable']:
+            for stack in placed_stacks:
+                if (stack['can_stack'] and 
+                    case['l'] <= stack['l'] and case['w'] <= stack['w'] and 
+                    (stack['cur_h'] + case['h']) <= vehicle['h']):
+                    stack['items'].append(case)
+                    stack['cur_h'] += case['h']
+                    packed = True
+                    break
+        
+        # 2. Jeśli nie, szukaj miejsca na podłodze
+        if not packed:
+            for i, space in enumerate(spaces):
+                if case['l'] <= space['l'] and case['w'] <= space['w']:
+                    new_stack = {
+                        "x": space['x'], "y": space['y'],
+                        "l": case['l'], "w": case['w'],
+                        "cur_h": case['h'], "can_stack": case['stackable'],
+                        "items": [case]
+                    }
+                    placed_stacks.append(new_stack)
+                    
+                    # Podział wolnej przestrzeni (Algorytm Guillotine)
+                    spaces.pop(i)
+                    if space['w'] - case['w'] > 0:
+                        spaces.append({"x": space['x'] + case['w'], "y": space['y'], "w": space['w'] - case['w'], "l": case['l']})
+                    if space['l'] - case['l'] > 0:
+                        spaces.append({"x": space['x'], "y": space['y'] + case['l'], "w": space['w'], "l": space['l'] - case['l']})
+                    
+                    spaces.sort(key=lambda s: s['l'] * s['w'])
+                    packed = True
+                    break
+        
+        if not packed:
+            unplaced.append(case)
 
-col_config, col_results = st.columns([1, 2])
+    # Obliczenia końcowe
+    total_weight = sum(sum(item['weight'] for item in s['items']) for s in placed_stacks)
+    floor_area = sum(s['l'] * s['w'] for s in placed_stacks)
+    total_vol = sum(sum(item['l']*item['w']*item['h'] for item in s['items']) for s in placed_stacks)
 
-with col_config:
-    st.header("1. Konfiguracja")
-    v_type = st.selectbox("Wybierz typ pojazdu", list(VEHICLES_DATA.keys()))
+    return {
+        "stacks": placed_stacks,
+        "unplaced": unplaced,
+        "weight": total_weight,
+        "floor_area": floor_area,
+        "volume": total_vol
+    }
+
+# --- INTERFEJS UŻYTKOWNIKA ---
+st.title("🚚 Planer Załadunków SQM - Logistyka Koncertowa")
+st.markdown("---")
+
+if 'cargo' not in st.session_state:
+    st.session_state.cargo = []
+
+col_in, col_out = st.columns([1, 2])
+
+with col_in:
+    st.subheader("1. Wybór Pojazdu")
+    v_type = st.selectbox("Typ naczepy", list(VEHICLES_DATA.keys()))
     v = VEHICLES_DATA[v_type]
-    st.info(f"**Limit:** {v['weight']}kg | {v['pallets']} palet | {v['l']}x{v['w']}x{v['h']} cm")
-    
+    st.info(f"Parametry: {v['l']}x{v['w']}x{v['h']} cm | Ładowność: {v['weight']} kg")
+
     st.divider()
-    st.header("2. Dodaj ładunek")
-    search_query = st.text_input("Szukaj sprzętu (np. NEC, LED, P2.6)...")
-    filtered_options = [k for k in PRODUCTS_DATA.keys() if search_query.lower() in k.lower()]
-    selected_name = st.selectbox("Wybierz z bazy danych", filtered_options)
+    st.subheader("2. Wybór Sprzętu")
+    search = st.text_input("Wpisz nazwę (np. P2.6, NEC, Truss)...")
+    filtered = [k for k in PRODUCTS_DATA.keys() if search.lower() in k.lower()]
+    selected = st.selectbox("Wybierz z listy", filtered)
     
-    if st.button("➕ Dodaj do listy załadunkowej", use_container_width=True):
-        new_item = PRODUCTS_DATA[selected_name].copy()
-        new_item['name'] = selected_name
-        st.session_state.cargo_list.append(new_item)
+    if st.button("➕ DODAJ DO LISTY", use_container_width=True):
+        item = PRODUCTS_DATA[selected].copy()
+        item['name'] = selected
+        item['qty'] = 1
+        st.session_state.cargo.append(item)
 
-with col_results:
-    st.header("3. Twoja naczepa")
+with col_out:
+    st.subheader("3. Edycja i Symulacja")
     
-    if not st.session_state.cargo_list:
-        st.warning("Lista załadunkowa jest pusta.")
+    if not st.session_state.cargo:
+        st.write("Twoja lista załadunkowa jest pusta.")
     else:
-        total_weight = 0
-        total_area = 0
-        total_cases_count = 0
-
-        # Pętla przez dodane pozycje
-        for i, item in enumerate(st.session_state.cargo_list):
-            with st.expander(f"📦 {item['name']}", expanded=True):
-                c1, c2, c3, c4 = st.columns(4)
-                l = c1.number_input("Długość (cm)", value=int(item['l']), key=f"l_{i}")
-                w = c2.number_input("Szerokość (cm)", value=int(item['w']), key=f"w_{i}")
-                h = c3.number_input("Wysokość (cm)", value=int(item['h']), key=f"h_{i}")
-                wg = c4.number_input("Waga case (kg)", value=float(item['weight']), key=f"wg_{i}")
-
-                q1, q2, q3 = st.columns([2, 1, 1])
-                qty = q1.number_input("Ilość sztuk sprzętu", min_value=1, value=1, key=f"qty_{i}")
-                stk = q2.checkbox("Stackuj", value=item['stack'], key=f"stk_{i}")
-                if q3.button("🗑️ Usuń", key=f"del_{i}"):
-                    st.session_state.cargo_list.pop(i)
+        for idx, it in enumerate(st.session_state.cargo):
+            with st.expander(f"📦 {it['name']}", expanded=True):
+                c1, c2, c3 = st.columns([2, 1, 1])
+                it['qty'] = c1.number_input("Sztuk", min_value=1, value=it['qty'], key=f"q_{idx}")
+                it['stack'] = c2.checkbox("Stackuj", value=it['stack'], key=f"s_{idx}")
+                if c3.button("🗑️ Usuń", key=f"rm_{idx}"):
+                    st.session_state.cargo.pop(idx)
                     st.rerun()
 
-                # --- POPRAWIONE OBLICZENIA DLA TEGO WIERSZA ---
-                num_cases = math.ceil(qty / item['items_per_case'])
-                total_cases_count += num_cases
-                total_weight += (wg * num_cases) # Waga wszystkich skrzyń w tym wierszu
-                
-                # Obliczanie zajętości podłogi
-                if not stk:
-                    total_area += (l * w * num_cases)
-                else:
-                    total_area += (l * w * math.ceil(num_cases / 2)) # Stackowanie na 2 poziomy
+        # URUCHOMIENIE SYMULACJI
+        res = simulate_packing(st.session_state.cargo, v)
 
-        # PODSUMOWANIE METRYCZNE
+        # PODSUMOWANIE
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         
-        pallet_equiv = round(total_area / EURO_PALLET_AREA, 2)
-        weight_perc = round((total_weight / v['weight']) * 100, 1)
+        ldm_equiv = round(res['floor_area'] / (120 * 80), 2)
+        weight_perc = round((res['weight'] / v['weight']) * 100, 1)
         
-        m1.metric("Waga całkowita", f"{total_weight} kg", f"{weight_perc}% limitu")
-        m2.metric("Miejsca paletowe", f"{pallet_equiv}", f"Limit: {v['pallets']}")
-        m3.metric("Zajęta pow.", f"{round(total_area/10000, 1)} m²")
-        m4.metric("Liczba casów", f"{total_cases_count}") # POPRAWKA: Suma wszystkich skrzyń
+        m1.metric("Masa Całkowita", f"{res['weight']} kg", f"{weight_perc}%")
+        m2.metric("Miejsca Paletowe", f"{ldm_equiv}", f"Limit: {v['pallets']}")
+        m3.metric("Liczba Skrzyń", f"{sum(len(s['items']) for s in res['stacks'])}")
+        m4.metric("Objętość", f"{round((res['volume']/(v['l']*v['w']*v['h']))*100,1)}%")
 
-        if total_weight > v['weight'] or pallet_equiv > v['pallets']:
-            st.error("⚠️ PRZEKROCZONO LIMIT ZAŁADUNKU!")
+        if res['unplaced']:
+            st.error(f"❌ NIE ZMIESZCZONO {len(res['unplaced'])} SKRZYŃ!")
+            for item in res['unplaced'][:5]:
+                st.caption(f"- {item['name']} ({item['l']}x{item['w']} cm)")
         else:
-            st.success("✅ Ładunek mieści się w parametrach.")
+            st.success("✅ Wszystkie elementy zostały pomyślnie rozmieszczone.")
 
-        if st.button("🔄 Wyczyść wszystko"):
-            st.session_state.cargo_list = []
-            st.rerun()
+        if st.checkbox("Pokaż Raport Rozmieszczenia Stosów"):
+            for i, s in enumerate(res['stacks']):
+                st.write(f"**Stos {i+1}:** Pozycja: ({s['x']}x{s['y']} cm) | Wys: {s['cur_h']} cm | Zawartość: {len(s['items'])}x {s['items'][0]['name']}")
+
+st.sidebar.markdown("""
+### O logice pakowania
+Aplikacja implementuje algorytm **Guillotine Bin Packing**. 
+1. Sortuje przedmioty według zajmowanej powierzchni.
+2. Układa największe skrzynie jako pierwsze.
+3. Sprawdza, czy mniejszy sprzęt może zostać ułożony na górze (stackowanie), uwzględniając wysokość naczepy.
+""")
